@@ -42,6 +42,77 @@ const InlineGeometryCanvas = ({ shape, dimensions }) => {
     );
   };
 
+  const renderTriangleInequality = ({ knownSides = [3, 3], unknownVariable = 'x' }) => {
+    const [side1, side2] = knownSides;
+    const minLength = Math.abs(side1 - side2);
+    const maxLength = side1 + side2;
+    
+    const centerX = 150;
+    const bottomY = 130;
+    const scale = 20;
+    
+    return (
+      <g>
+        {/* First triangle showing the concept */}
+        <polygon
+          points={`${centerX - 60},${bottomY} ${centerX - 60 + side1 * scale},${bottomY} ${centerX - 60 + side1 * scale / 2},${bottomY - 40}`}
+          fill="#e8f4fd"
+          stroke="#000"
+          strokeWidth="2"
+          opacity="0.7"
+        />
+        
+        {/* Labels for known sides */}
+        <text x={centerX - 60 + (side1 * scale) / 2} y={bottomY + 15} textAnchor="middle" fontSize="12" fontWeight="bold">
+          {side1}
+        </text>
+        <text x={centerX - 60 - 15} y={bottomY - 15} fontSize="12" fontWeight="bold">
+          {side2}
+        </text>
+        <text x={centerX - 60 + side1 * scale + 15} y={bottomY - 15} fontSize="12" fontWeight="bold" fill="#d63384">
+          {unknownVariable}
+        </text>
+        
+        {/* Range visualization */}
+        <g transform="translate(0, 40)">
+          {/* Number line */}
+          <line x1={centerX - 80} y1={bottomY} x2={centerX + 80} y2={bottomY} stroke="#666" strokeWidth="2" />
+          
+          {/* Range indicators */}
+          <line x1={centerX - 40} y1={bottomY - 5} x2={centerX - 40} y2={bottomY + 5} stroke="#ff6b6b" strokeWidth="3" />
+          <line x1={centerX + 40} y1={bottomY - 5} x2={centerX + 40} y2={bottomY + 5} stroke="#ff6b6b" strokeWidth="3" />
+          
+          {/* Range line */}
+          <line x1={centerX - 40} y1={bottomY} x2={centerX + 40} y2={bottomY} stroke="#28a745" strokeWidth="4" />
+          
+          {/* Labels */}
+          <text x={centerX - 40} y={bottomY + 20} textAnchor="middle" fontSize="11" fontWeight="bold" fill="#ff6b6b">
+            {minLength}
+          </text>
+          <text x={centerX + 40} y={bottomY + 20} textAnchor="middle" fontSize="11" fontWeight="bold" fill="#ff6b6b">
+            {maxLength}
+          </text>
+          <text x={centerX} y={bottomY - 15} textAnchor="middle" fontSize="12" fontWeight="bold" fill="#28a745">
+            Valid range for {unknownVariable}
+          </text>
+        </g>
+        
+        {/* Triangle inequality rule */}
+        <text x={centerX} y={50} textAnchor="middle" fontSize="14" fontWeight="bold" fill="#333">
+          Triangle Inequality Rule
+        </text>
+        <text x={centerX} y={70} textAnchor="middle" fontSize="12" fill="#666">
+          The sum of any two sides must be greater than the third side
+        </text>
+        
+        {/* Mathematical expression */}
+        <text x={centerX} y={bottomY + 90} textAnchor="middle" fontSize="13" fontWeight="bold" fill="#d63384">
+          {minLength} &lt; {unknownVariable} &lt; {maxLength}
+        </text>
+      </g>
+    );
+  };
+
   const renderAnglesOnLine = ({ knownAngles = [45, 90], total = 180, isAroundPoint = false }) => {
     const centerX = 150;
     const centerY = 80;
@@ -326,6 +397,8 @@ const InlineGeometryCanvas = ({ shape, dimensions }) => {
 
   const renderShape = () => {
     switch (shape) {
+      case 'triangle_inequality':
+        return renderTriangleInequality(dimensions);
       case 'angles_on_line':
         return renderAnglesOnLine(dimensions);
       case 'single_angle':
@@ -343,6 +416,8 @@ const InlineGeometryCanvas = ({ shape, dimensions }) => {
 
   const getFormula = () => {
     switch (shape) {
+      case 'triangle_inequality':
+        return 'Triangle Inequality: The sum of any two sides must be greater than the third side';
       case 'angles_on_line':
         return dimensions.isAroundPoint ? 'Angles around a point = 360°' : 'Angles on a straight line = 180°';
       case 'single_angle':

@@ -1,9 +1,7 @@
 // src/components/TutorApp.js
 import React, { useEffect, useState, useRef } from 'react';
 import InlineGeometryCanvas from './InlineGeometryCanvas';
-import CameraCapture from './CameraCapture';
 import { detectGeometryProblem } from './geometryUtils';
-import { processGeometryPhoto } from './photoGeometryProcessor';
 
 function TutorApp({ userProfile, onLogout, setUserProfile }) {
   // ---- App state ----
@@ -11,8 +9,6 @@ function TutorApp({ userProfile, onLogout, setUserProfile }) {
   const [messages, setMessages] = useState([]);
   const [inputMessage, setInputMessage] = useState('');
   const [isPlaying, setIsPlaying] = useState(null);
-  const [showCamera, setShowCamera] = useState(false);
-  const [isProcessingPhoto, setIsProcessingPhoto] = useState(false);
 
   // ---- Refs for auto-scroll ----
   const messagesEndRef = useRef(null);
@@ -80,98 +76,6 @@ function TutorApp({ userProfile, onLogout, setUserProfile }) {
 
     fetchTokenUsage();
   }, [profile.name, profile.childName, setUserProfile]);
-
-  // ---- Photo handling ----
-  const handlePhotoCapture = async (imageFile, imageDataUrl) => {
-    setIsProcessingPhoto(true);
-    
-    try {
-      const result = await processGeometryPhoto(imageFile, imageDataUrl);
-      
-      if (result.success && result.geometryResult) {
-        const photoMsg = {
-          id: messages.length + 1,
-          text: `Photo captured: ${result.analysis.description}`,
-          sender: 'user',
-          timestamp: new Date(),
-          photoDataUrl: imageDataUrl
-        };
-        
-        const geometryMsg = {
-          id: messages.length + 2,
-          sender: 'geometry',
-          timestamp: new Date(),
-          shape: result.geometryResult.shape,
-          dimensions: result.geometryResult.dimensions
-        };
-        
-        setMessages(prev => [...prev, photoMsg, geometryMsg]);
-        
-        handleAIResponse(`I took a photo of a geometry problem: ${result.analysis.description}. Can you help me solve it step by step?`);
-        
-      } else {
-        const errorMsg = {
-          id: messages.length + 1,
-          text: `Photo captured, but I couldn't detect a clear geometry problem. Could you describe what you see in the image?`,
-          sender: 'bot',
-          timestamp: new Date(),
-        };
-        setMessages(prev => [...prev, errorMsg]);
-      }
-      
-    } catch (error) {
-      console.error('Photo processing error:', error);
-      const errorMsg = {
-        id: messages.length + 1,
-        text: `Photo captured, but there was an issue processing it. Please try again or describe the problem instead.`,
-        sender: 'bot',
-        timestamp: new Date(),
-      };
-      setMessages(prev => [...prev, errorMsg]);
-    } finally {
-      setIsProcessingPhoto(false);
-    }
-  };
-  
-  const handleAIResponse = async (messageText) => {
-    try {
-      const resp = await fetch('http://localhost:3001/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          message: messageText,
-          subject: 'Mathematics',
-          yearLevel: 7,
-          curriculum: 'NSW',
-          userId: profile.childName || profile.name || 'Alex',
-        }),
-      });
-
-      const data = await resp.json();
-      
-      if (resp.ok) {
-        if (data.tokens && setUserProfile) {
-          setUserProfile(prev => ({
-            ...prev,
-            tokensUsed: data.tokens.totalUsed || data.tokens.userTotal || prev.tokensUsed,
-            tokensLimit: data.tokens.limit || prev.tokensLimit,
-          }));
-        }
-
-        setMessages(prev => [
-          ...prev,
-          {
-            id: prev.length + 1,
-            text: data.response,
-            sender: 'bot',
-            timestamp: new Date(),
-          },
-        ]);
-      }
-    } catch (error) {
-      console.error('AI Response error:', error);
-    }
-  };
 
   // ---- TTS ----
   const speakMessage = (text, messageId) => {
@@ -676,59 +580,16 @@ What ${subject.toLowerCase()} problem are you working on today?`,
                   placeholder="Tell me what you're working on or type your solution step by step..."
                 />
               </div>
-              <div style={{ display: 'flex', gap: '8px' }}>
-                <button
-                  onClick={() => setShowCamera(true)}
-                  style={{
-                    background: '#28a745',
-                    border: 'none',
-                    borderRadius: '4px',
-                    padding: '8px 12px',
-                    color: 'white',
-                    cursor: 'pointer',
-                    fontSize: '14px',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '4px'
-                  }}
-                  title="Take a photo of your geometry problem"
-                >
-                  Photo
-                </button>
-                <button
-                  className="send-button"
-                  onClick={handleSendMessage}
-                  disabled={!inputMessage.trim()}
-                >
-                  Send
-                </button>
-              </div>
+              <button
+                className="send-button"
+                onClick={handleSendMessage}
+                disabled={!inputMessage.trim()}
+              >
+                Send
+              </button>
             </div>
           </div>
         </div>
-
-        {showCamera && (
-          <CameraCapture
-            onPhotoCapture={handlePhotoCapture}
-            onClose={() => setShowCamera(false)}
-          />
-        )}
-
-        {isProcessingPhoto && (
-          <div style={{
-            position: 'fixed',
-            top: '50%',
-            left: '50%',
-            transform: 'translate(-50%, -50%)',
-            backgroundColor: 'rgba(0,0,0,0.8)',
-            color: 'white',
-            padding: '20px',
-            borderRadius: '8px',
-            zIndex: 999
-          }}>
-            Processing photo...
-          </div>
-        )}
       </div>
     );
   }
