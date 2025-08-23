@@ -3,6 +3,7 @@ import React, { useEffect, useState, useRef } from 'react';
 import InlineGeometryCanvas from './InlineGeometryCanvas';
 import { detectMathDiagram, DiagramPopup } from './diagramDetector';
 import InlineDiagramConfirm from './InlineDiagramConfirm';
+const API_BASE_URL = process.env.REACT_APP_API_URL || 'https://aitutorv2-9.onrender.com/';
 
 function TutorApp({ userProfile, onLogout, setUserProfile }) {
   // ---- App state ----
@@ -58,7 +59,7 @@ function TutorApp({ userProfile, onLogout, setUserProfile }) {
       if (!userId || !setUserProfile) return;
 
       try {
-        const res = await fetch(`http://localhost:3001/api/user/${userId}/tokens`);
+        const res = await fetch(`${API_BASE_URL}/api/user/${userId}/tokens`);
         const data = await res.json();
         if (res.ok) {
           setUserProfile(prev => ({
@@ -254,7 +255,7 @@ function TutorApp({ userProfile, onLogout, setUserProfile }) {
         ? `${diagramContext}\n\nStudent question: ${messageText}`
         : messageText;
 
-      const resp = await fetch('http://localhost:3001/api/chat', {
+      const resp = await fetch(`${API_BASE_URL}/api/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -320,7 +321,7 @@ function TutorApp({ userProfile, onLogout, setUserProfile }) {
   const handleGenerateWorksheet = async () => {
     setIsGenerating(true);
     try {
-      const resp = await fetch('http://localhost:3001/api/generate-worksheet', {
+      const resp = await fetch(`${API_BASE_URL}/api/generate-worksheet`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -357,7 +358,7 @@ function TutorApp({ userProfile, onLogout, setUserProfile }) {
 
   async function downloadWorksheetFile(fmt) {
     try {
-      const resp = await fetch('http://localhost:3001/api/generate-worksheet-file', {
+      const resp = await fetch(`${API_BASE_URL}/api/generate-worksheet-file`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -390,7 +391,7 @@ function TutorApp({ userProfile, onLogout, setUserProfile }) {
 
   const handleResetContext = async () => {
     try {
-      await fetch('http://localhost:3001/api/chat/reset', {
+      await fetch(`${API_BASE_URL}/api/chat/reset`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
