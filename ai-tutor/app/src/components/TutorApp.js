@@ -1,23 +1,29 @@
-// Enhanced TutorApp.js with diagram detection flow
+// Enhanced TutorApp.js with mobile width fix
 import React, { useEffect, useState, useRef } from 'react';
+import './chat.css';
 import InlineGeometryCanvas from './InlineGeometryCanvas';
 import { detectMathDiagram, DiagramPopup } from './diagramDetector';
 import InlineDiagramConfirm from './InlineDiagramConfirm';
-const API_BASE_URL = process.env.REACT_APP_API_URL || 'https:localhost://300';
+
+const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:3000';
 
 function TutorApp({ userProfile, onLogout, setUserProfile }) {
-  // ---- App state ----
+  // App state
   const [selectedSubject, setSelectedSubject] = useState(null);
   const [messages, setMessages] = useState([]);
   const [inputMessage, setInputMessage] = useState('');
   const [isPlaying, setIsPlaying] = useState(null);
+  const [transcriptStats, setTranscriptStats] = useState(null);
   
-  // ---- New diagram detection state ----
+  // Mobile detection
+  const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);
+  
+  // Diagram detection state
   const [diagramDetection, setDiagramDetection] = useState(null);
   const [showDiagramPopup, setShowDiagramPopup] = useState(false);
   const [pendingMessage, setPendingMessage] = useState(null);
 
-  // ---- Refs for auto-scroll ----
+  // Refs for auto-scroll
   const messagesEndRef = useRef(null);
   const messagesAreaRef = useRef(null);
 
@@ -29,7 +35,7 @@ function TutorApp({ userProfile, onLogout, setUserProfile }) {
   const [isGenerating, setIsGenerating] = useState(false);
   const [generatedHtml, setGeneratedHtml] = useState('');
 
-  // ---- Profile (fallbacks) ----
+  // Profile fallbacks
   const profile = userProfile || {
     name: 'Alex',
     subscription: 'Premium',
@@ -38,7 +44,61 @@ function TutorApp({ userProfile, onLogout, setUserProfile }) {
     streakDays: 5,
   };
 
-  // ---- Auto-scroll function ----
+  // Mobile detection effect
+
+
+  
+  useEffect(() => {
+    const handleResize = () => {
+      setIsMobile(window.innerWidth <= 768);
+    };
+    
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  useEffect(() => {
+    const fetchTranscriptStats = async () => {
+      const userId = profile.childName || profile.name;
+      if (!userId) return;
+  
+      try {
+        const res = await fetch(`${API_BASE_URL}/api/user/${userId}/transcript-stats`);
+        const data = await res.json();
+        if (res.ok) {
+          setTranscriptStats(data);
+        }
+      } catch (e) {
+        console.error('Error fetching transcript stats:', e);
+      }
+    };
+  
+    fetchTranscriptStats();
+  }, [profile.name, profile.childName]);
+
+  // 👇 Add this near the top of TutorApp.js (inside your component)
+const refreshTranscriptStats = React.useCallback(async () => {
+  const rawId = profile.childName || profile.name;
+  if (!rawId) return;
+
+  const userId = encodeURIComponent(rawId);
+  try {
+    const res = await fetch(`${API_BASE_URL}/api/user/${userId}/transcript-stats`);
+    const data = await res.json();
+    if (res.ok) {
+      setTranscriptStats(data);
+    }
+  } catch (e) {
+    console.error('Error fetching transcript stats:', e);
+  }
+}, [profile.name, profile.childName]);
+
+useEffect(() => {
+  refreshTranscriptStats();
+}, [refreshTranscriptStats]);
+
+
+  // Auto-scroll function
   const scrollToBottom = () => {
     requestAnimationFrame(() => {
       if (messagesAreaRef.current) {
@@ -47,12 +107,12 @@ function TutorApp({ userProfile, onLogout, setUserProfile }) {
     });
   };
 
-  // ---- Auto-scroll when messages change ----
+  // Auto-scroll when messages change
   useEffect(() => {
     scrollToBottom();
   }, [messages]);
 
-  // ---- Fetch token usage on mount / user change ----
+  // Fetch token usage on mount
   useEffect(() => {
     const fetchTokenUsage = async () => {
       const userId = profile.childName || profile.name;
@@ -76,7 +136,7 @@ function TutorApp({ userProfile, onLogout, setUserProfile }) {
     fetchTokenUsage();
   }, [profile.name, profile.childName, setUserProfile]);
 
-  // ---- TTS ----
+  // TTS
   const speakMessage = (text, messageId) => {
     window.speechSynthesis.cancel();
     if (isPlaying === messageId) {
@@ -100,14 +160,12 @@ function TutorApp({ userProfile, onLogout, setUserProfile }) {
     window.speechSynthesis.speak(u);
   };
 
-  // ---- Enhanced send message with inline confirmation ----
+  // Enhanced send message with inline confirmation
   const handleSendMessage = async () => {
     if (!inputMessage.trim()) return;
 
-    // Step 1: Fast local diagram detection
     const detection = detectMathDiagram(inputMessage);
     
-    // Add user message first
     const userMsg = {
       id: messages.length + 1,
       text: inputMessage,
@@ -119,7 +177,6 @@ function TutorApp({ userProfile, onLogout, setUserProfile }) {
     setMessages(history);
     setInputMessage('');
 
-    // Step 2: If diagram detected, show full diagram with confirmation
     if (detection && detection.confidence > 0.3) {
       const geometryMsg = {
         id: history.length + 1,
@@ -133,33 +190,27 @@ function TutorApp({ userProfile, onLogout, setUserProfile }) {
       };
       
       setMessages(prev => [...prev, geometryMsg]);
-      return; // Wait for user confirmation
+      return;
     }
 
-    // Step 3: No diagram detected - send to AI directly
     await sendMessageToAI(userMsg.text, '', history.length + 1);
   };
 
   // Handle diagram confirmation
   const handleConfirmInlineDiagram = (messageId, userMessage) => {
-    // Update the message to confirmed state
     setMessages(prev => prev.map(msg => 
       msg.id === messageId 
         ? { ...msg, sender: 'geometry_confirmed', confirmed: true }
         : msg
     ));
     
-    // Send to AI with diagram context
     const detection = messages.find(m => m.id === messageId)?.detection;
     const diagramContext = `[DIAGRAM SHOWN: ${detection.template} - ${detection.shape}]`;
     sendMessageToAI(userMessage, diagramContext, messageId + 1);
   };
 
   const handleDismissInlineDiagram = (messageId, userMessage) => {
-    // Remove the diagram message
     setMessages(prev => prev.filter(msg => msg.id !== messageId));
-    
-    // Send to AI without diagram context
     sendMessageToAI(userMessage, '', messageId);
   };
 
@@ -171,11 +222,10 @@ function TutorApp({ userProfile, onLogout, setUserProfile }) {
     ));
   };
 
-  // ---- Diagram popup handlers ----
+  // Diagram popup handlers
   const handleConfirmDiagram = async (detection) => {
     setShowDiagramPopup(false);
     
-    // Add user message first
     const userMsg = {
       id: messages.length + 1,
       text: pendingMessage.text,
@@ -186,7 +236,6 @@ function TutorApp({ userProfile, onLogout, setUserProfile }) {
     const history = [...messages, userMsg];
     setMessages(history);
 
-    // Add diagram message
     const geometryMsg = {
       id: history.length + 1,
       sender: 'geometry',
@@ -198,11 +247,9 @@ function TutorApp({ userProfile, onLogout, setUserProfile }) {
     setMessages(prev => [...prev, geometryMsg]);
     setInputMessage('');
 
-    // Send to AI with diagram context
     const diagramContext = `[DIAGRAM SHOWN: ${detection.template} - ${detection.shape} with dimensions: ${JSON.stringify(detection.dimensions)}]`;
     await sendMessageToAI(pendingMessage.text, diagramContext, history.length + 2);
     
-    // Clean up
     setDiagramDetection(null);
     setPendingMessage(null);
   };
@@ -211,14 +258,11 @@ function TutorApp({ userProfile, onLogout, setUserProfile }) {
     setShowDiagramPopup(false);
     await sendMessageToAI(pendingMessage.text);
     
-    // Clean up
     setDiagramDetection(null);
     setPendingMessage(null);
   };
 
   const handleEditDiagram = (detection) => {
-    // TODO: Implement diagram editor
-    // For now, just use the diagram as-is
     handleConfirmDiagram(detection);
   };
 
@@ -228,7 +272,7 @@ function TutorApp({ userProfile, onLogout, setUserProfile }) {
     setPendingMessage(null);
   };
 
-  // ---- Core AI communication ----
+  // Core AI communication
   const sendMessageToAI = async (messageText, diagramContext = '', nextMessageId = null) => {
     const newMsg = {
       id: nextMessageId || messages.length + 1,
@@ -239,7 +283,6 @@ function TutorApp({ userProfile, onLogout, setUserProfile }) {
     
     let history;
     if (nextMessageId) {
-      // Message already added to history
       history = messages;
     } else {
       history = [...messages, newMsg];
@@ -250,7 +293,6 @@ function TutorApp({ userProfile, onLogout, setUserProfile }) {
     setTimeout(scrollToBottom, 50);
 
     try {
-      // Include diagram context in the message if available
       const contextualMessage = diagramContext 
         ? `${diagramContext}\n\nStudent question: ${messageText}`
         : messageText;
@@ -317,7 +359,7 @@ function TutorApp({ userProfile, onLogout, setUserProfile }) {
     setTimeout(scrollToBottom, 100);
   };
 
-  // ---- Worksheet generation (unchanged) ----
+  // Worksheet generation
   const handleGenerateWorksheet = async () => {
     setIsGenerating(true);
     try {
@@ -419,7 +461,7 @@ function TutorApp({ userProfile, onLogout, setUserProfile }) {
     }
   };
 
-  // ---- Navigation / logout ----
+  // Navigation / logout
   const handleSubjectClick = subject => {
     setSelectedSubject(subject);
     if (subject === 'AI Tutor') {
@@ -463,15 +505,36 @@ What ${subject.toLowerCase()} problem are you working on today?`,
     onLogout?.();
   };
 
-  // ---- Derived ----
   const tokenPercentage =
     profile.tokensLimit > 0 ? Math.round((profile.tokensUsed / profile.tokensLimit) * 100) : 0;
 
-  // ================== Worksheet Generator ==================
+  // Mobile styles for full width
+  const mobileContainerStyles = isMobile ? {
+    position: 'fixed',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    width: '100vw',
+    height: '100vh',
+    maxWidth: '100vw',
+    margin: 0,
+    padding: 0,
+    zIndex: 9999,
+    boxSizing: 'border-box'
+  } : {};
+
+  const mobileFullWidthStyles = isMobile ? {
+    width: '100vw',
+    maxWidth: '100vw',
+    boxSizing: 'border-box'
+  } : {};
+
+  // Worksheet Generator
   if (selectedSubject === 'Worksheet Generator') {
     return (
-      <div className="app chat-mode">
-        <div className="chat-header">
+      <div className="app chat-mode" style={mobileContainerStyles}>
+        <div className="chat-header" style={mobileFullWidthStyles}>
           <button className="back-button" onClick={handleBackToSubjects}>
             ← Back
           </button>
@@ -584,10 +647,10 @@ What ${subject.toLowerCase()} problem are you working on today?`,
     );
   }
 
-  // ================== Chat ==================
+  // Chat Mode
   if (selectedSubject) {
     return (
-      <div className="app chat-mode">
+      <div className="app chat-mode" style={mobileContainerStyles}>
         {showDiagramPopup && (
           <DiagramPopup
             detection={diagramDetection}
@@ -598,7 +661,7 @@ What ${subject.toLowerCase()} problem are you working on today?`,
           />
         )}
 
-        <div className="chat-header">
+        <div className="chat-header" style={mobileFullWidthStyles}>
           <button className="back-button" onClick={handleBackToSubjects}>
             ← Back
           </button>
@@ -608,15 +671,6 @@ What ${subject.toLowerCase()} problem are you working on today?`,
               className="reset-button" 
               onClick={handleResetContext}
               title="Start fresh conversation"
-              style={{
-                background: 'none',
-                border: '1px solid #ddd',
-                borderRadius: '4px',
-                padding: '6px 12px',
-                marginRight: '8px',
-                cursor: 'pointer',
-                fontSize: '14px'
-              }}
             >
               Reset
             </button>
@@ -626,8 +680,15 @@ What ${subject.toLowerCase()} problem are you working on today?`,
           </div>
         </div>
 
-        <div className="chat-container">
-          <div className="messages-area" ref={messagesAreaRef}>
+        <div className="chat-container" style={mobileFullWidthStyles}>
+          <div 
+            className="messages-area" 
+            ref={messagesAreaRef}
+            style={{
+              ...mobileFullWidthStyles,
+              ...(isMobile ? { padding: '12px' } : {})
+            }}
+          >
             {messages.map(m => (
               <div key={m.id} className={`message ${m.sender}`}>
                 {(m.sender === 'user' || m.sender === 'bot') && (
@@ -690,8 +751,17 @@ What ${subject.toLowerCase()} problem are you working on today?`,
             <div ref={messagesEndRef} />
           </div>
 
-          <div className="chat-input-container">
-            <div className="input-wrapper">
+          <div 
+            className="chat-input-container" 
+            style={{
+              ...mobileFullWidthStyles,
+              ...(isMobile ? { padding: '12px' } : {})
+            }}
+          >
+            <div 
+              className="input-wrapper"
+              style={isMobile ? { width: '100%', maxWidth: '100%' } : {}}
+            >
               <div className="input-section">
                 <textarea
                   className="math-text-input"
@@ -701,6 +771,7 @@ What ${subject.toLowerCase()} problem are you working on today?`,
                   onKeyPress={handleKeyPress}
                   placeholder="Tell me what you're working on or type your solution step by step..."
                   disabled={showDiagramPopup}
+                  style={isMobile ? { width: '100%', maxWidth: '100%' } : {}}
                 />
               </div>
               <button
@@ -730,7 +801,7 @@ What ${subject.toLowerCase()} problem are you working on today?`,
     );
   }
 
-  // ================== Landing ==================
+  // Landing Page
   return (
     <div className="app">
       <div className="app-header">
@@ -795,6 +866,14 @@ What ${subject.toLowerCase()} problem are you working on today?`,
           </div>
         </div>
       </div>
+      {transcriptStats && (
+  <div className="transcript-info-card">
+    <h3>Conversation History</h3>
+    <p>Total conversations: {transcriptStats.totalTranscripts}</p>
+    <p>Last 7 days: {transcriptStats.last7DaysCount}</p>
+    <small>Transcripts available for {transcriptStats.retentionDays} days</small>
+  </div>
+)}
     </div>
   );
 }

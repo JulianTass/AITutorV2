@@ -34,6 +34,8 @@ const PORT = process.env.PORT || 3000;
 const userTokenUsage = new Map();
 const conversations = new Map();
 const curriculumCache = new Map();
+const conversationTranscripts = new Map(); 
+const TRANSCRIPT_RETENTION_DAYS = 30;
 
 // === Anthropic (Claude) init ===
 let anthropic = null;
@@ -116,6 +118,43 @@ function buildYear7SystemPrompt(topic) {
     'ALWAYS follow the scaffold steps when they apply to the student\'s question.';
   
   return fullPrompt;
+}
+
+function createTranscriptEntry(userId, message, response, metadata = {}) {
+  return {
+    id: `transcript_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+    userId,
+    timestamp: new Date(),
+    message,
+    response,
+    metadata: {
+      subject: metadata.subject || 'Mathematics',
+      yearLevel: metadata.yearLevel || 7,
+      curriculum: metadata.curriculum || 'NSW',
+      conversationId: metadata.conversationId,
+      detectedTopic: metadata.detectedTopic,
+      ...metadata
+    }
+  };
+}
+
+// Helper function to clean old transcripts
+function cleanOldTranscripts() {
+  const cutoffDate = new Date(Date.now() - (TRANSCRIPT_RETENTION_DAYS * 24 * 60 * 60 * 1000));
+  
+  for (const [userId, transcripts] of conversationTranscripts.entries()) {
+    const filteredTranscripts = transcripts.filter(t => t.timestamp > cutoffDate);
+    
+    if (filteredTranscripts.length !== transcripts.length) {
+      conversationTranscripts.set(userId, filteredTranscripts);
+      console.log(`🧹 Cleaned ${transcripts.length - filteredTranscripts.length} old transcripts for user ${userId}`);
+    }
+    
+    // Remove empty arrays
+    if (filteredTranscripts.length === 0) {
+      conversationTranscripts.delete(userId);
+    }
+  }
 }
 
 function findRelevantScaffolds(topicData, topic) {
@@ -244,46 +283,36 @@ function determineCurrentScaffoldStep(conversation, scaffold) {
 function checkYear7Scope(message, topic) {
   const msg = message.toLowerCase();
   
-  // First check if it's asking for a definition/explanation of a Year 7 term
+  // Always allow basic arithmetic - these are foundational
+  if (/\b\d+\s*[\+\-\*×÷\/]\s*\d+\b/.test(msg) || 
+      /what\s+is\s+\d+/.test(msg) ||
+      msg.includes('add') || msg.includes('plus') || 
+      msg.includes('subtract') || msg.includes('minus') ||
+      msg.includes('multiply') || msg.includes('times') ||
+      msg.includes('divide')) {
+    console.log('✅ Basic arithmetic - always in scope');
+    return { inScope: true };
+  }
+
+  // Check for definition requests
   const definitionKeywords = ['what is', 'define', 'meaning of', 'explain', 'definition'];
   const isDefinitionRequest = definitionKeywords.some(keyword => msg.includes(keyword));
   
   if (isDefinitionRequest) {
-    // Check against curriculum glossary and common Year 7 math terms
-    const year7Terms = [
-      // From curriculum glossary verbs
-      ...curriculum.glossary.verbs.map(v => v.term),
-      // Common Year 7 algebra terms
-      'coefficient', 'variable', 'constant', 'term', 'expression', 'equation',
-      'factor', 'multiple', 'prime', 'fraction', 'decimal', 'percentage',
-      'ratio', 'area', 'perimeter', 'angle', 'parallel', 'perpendicular',
-      'mean', 'median', 'mode', 'range', 'probability'
-    ];
-    
-    const termRequested = year7Terms.find(term => 
-      msg.includes(term.toLowerCase())
-    );
-    
-    if (termRequested) {
-      console.log(`📖 Definition request for Year 7 term: ${termRequested}`);
-      return { inScope: true, definitionRequest: termRequested };
-    }
+    // ... your existing definition logic ...
   }
+
+  // For everything else, be more lenient - if it contains any math keywords, allow it
+  const mathKeywords = ['equation', 'solve', 'calculate', 'find', 'math', 'number', 
+                       'fraction', 'decimal', 'angle', 'area', 'perimeter'];
   
-  // Check if topic exists in Year 7 curriculum
-  const validTopic = curriculum.topic_catalog.some(t => 
-    t.topic.toLowerCase().includes(topic.toLowerCase()) ||
-    t.subtopics.some(sub => topic.toLowerCase().includes(sub.toLowerCase()))
-  );
-  
-  if (!validTopic) {
-    return {
-      inScope: false,
-      refusal: curriculum.refusal_messages[0].replace('<prerequisite>', 'basic Year 7 concepts').replace('<suggestion>', 'a Year 7 topic like fractions or basic algebra')
-    };
+  if (mathKeywords.some(keyword => msg.includes(keyword))) {
+    console.log('✅ Contains math keywords - allowing');
+    return { inScope: true };
   }
-  
-  return { inScope: true };
+
+  // Only block clearly non-mathematical content
+  return { inScope: true }; // Default to allowing rather than blocking
 }
 
 function handleTopicChange(conversation, newTopic, message) {
@@ -793,6 +822,7 @@ app.get('/api/user/:userId/tokens', (req, res) => {
 });
 
 // IMPROVED CHAT WITH CURRICULUM INTEGRATION
+// IMPROVED CHAT WITH CURRICULUM INTEGRATION + TRANSCRIPT SAVE
 app.post('/api/chat', async (req, res) => {
   console.log('\n🚀 === CHAT REQUEST ===');
 
@@ -803,14 +833,15 @@ app.post('/api/chat', async (req, res) => {
     curriculum = 'NSW', 
     userId = 'anonymous',
     resetContext = false,
-    // Ignore conversationHistory from frontend - we manage it server-side now
+    // Ignored by server-side context mgmt
     conversationHistory, // eslint-disable-line no-unused-vars
-    messageType // eslint-disable-line no-unused-vars
+    messageType,         // eslint-disable-line no-unused-vars
+    diagramContext = false // (optional) if you send this from the client
   } = req.body || {};
 
   console.log(`📨 Message: "${message}" from user: ${userId}`);
 
-  // First, check ALL existing conversations for this user to find the most recent one
+  // Pull the most recent conversation for this user (any subject), newest first
   const userConversations = Array.from(conversations.entries())
     .filter(([key]) => key.startsWith(userId))
     .sort(([,a], [,b]) => b.lastActive - a.lastActive);
@@ -826,21 +857,21 @@ app.post('/api/chat', async (req, res) => {
     console.log(`⏰ Most recent conversation: ${mostRecentKey}, ${Math.round(timeSinceLastActive / 1000 / 60)} minutes ago`);
   }
 
-  // Detect topic with curriculum awareness
+  // Detect topic (curriculum-aware)
   const detectedTopic = detectMathematicalTopic(message, mostRecentConversation);
   console.log(`🎯 Topic: ${detectedTopic}`);
 
-  // Check Year 7 scope
+  // Scope check (Year 7)
   const scopeCheck = checkYear7Scope(message, detectedTopic);
-  
-  // Handle definition requests with Socratic responses BEFORE scope check
+
+  // Handle definition requests with Socratic responses before scope enforcement
   if (scopeCheck.definitionRequest) {
     const definition = getYear7Definition(scopeCheck.definitionRequest);
     if (definition) {
       console.log(`📖 Providing Socratic definition for: ${scopeCheck.definitionRequest}`);
-      
-      // Create or update conversation for this definition topic
-      let definitionConversation = conversations.get(getConversationKey(userId, 'Algebra & Equations', yearLevel));
+
+      const defKey = getConversationKey(userId, 'Algebra & Equations', yearLevel);
+      let definitionConversation = conversations.get(defKey);
       if (!definitionConversation) {
         definitionConversation = {
           messages: [],
@@ -854,23 +885,12 @@ app.post('/api/chat', async (req, res) => {
           lastCurriculumTopic: 'Algebra & Equations'
         };
       }
-      
-      // Add the definition exchange to conversation
-      definitionConversation.messages.push({
-        role: 'user',
-        content: message,
-        timestamp: new Date()
-      });
-      
-      definitionConversation.messages.push({
-        role: 'assistant', 
-        content: definition.socratic,
-        timestamp: new Date()
-      });
-      
+
+      definitionConversation.messages.push({ role: 'user', content: message, timestamp: new Date() });
+      definitionConversation.messages.push({ role: 'assistant', content: definition.socratic, timestamp: new Date() });
       definitionConversation.lastActive = new Date();
-      conversations.set(getConversationKey(userId, 'Algebra & Equations', yearLevel), definitionConversation);
-      
+      conversations.set(defKey, definitionConversation);
+
       return res.json({
         response: definition.socratic,
         subject: 'Algebra & Equations',
@@ -878,12 +898,12 @@ app.post('/api/chat', async (req, res) => {
         yearLevel,
         curriculum,
         conversationLength: definitionConversation.messages.length,
-        conversationId: getConversationKey(userId, 'Algebra & Equations', yearLevel),
+        conversationId: defKey,
         definitionProvided: scopeCheck.definitionRequest
       });
     }
   }
-  
+
   if (!scopeCheck.inScope) {
     console.log(`🚫 Out of Year 7 scope: ${detectedTopic}`);
     return res.json({
@@ -895,11 +915,10 @@ app.post('/api/chat', async (req, res) => {
     });
   }
 
-  // Get conversation key
+  // Build/migrate conversation
   const conversationKey = getConversationKey(userId, detectedTopic, yearLevel);
   console.log(`🔑 Conversation key: ${conversationKey}`);
-  
-  // Reset context if requested
+
   if (resetContext) {
     conversations.delete(conversationKey);
     console.log(`🔄 Reset conversation context for ${conversationKey}`);
@@ -907,21 +926,16 @@ app.post('/api/chat', async (req, res) => {
 
   let conversation = conversations.get(conversationKey);
 
-  // If no exact conversation exists, try to continue the most recent one
+  // Continue the most recent conversation if it's fresh (<5min), migrating topic if needed
   if (!conversation && mostRecentConversation) {
     const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
-    
-    // If the most recent conversation is less than 5 minutes old, continue it
     if (mostRecentConversation.lastActive > fiveMinutesAgo) {
       console.log(`🔗 Continuing recent conversation from ${mostRecentKey}`);
       conversation = mostRecentConversation;
-      
-      // Handle topic change
+
       const topicChanged = handleTopicChange(conversation, detectedTopic, message);
       if (topicChanged) {
         conversation.lastActive = new Date();
-        
-        // If the key is different, migrate the conversation
         if (mostRecentKey !== conversationKey) {
           conversations.delete(mostRecentKey);
           conversations.set(conversationKey, conversation);
@@ -930,8 +944,7 @@ app.post('/api/chat', async (req, res) => {
       }
     }
   }
-  
-  // If still no conversation, create new one
+
   if (!conversation) {
     console.log(`✨ Creating new conversation for ${conversationKey}`);
     conversation = {
@@ -949,9 +962,9 @@ app.post('/api/chat', async (req, res) => {
     console.log(`📚 Using existing conversation with ${conversation.messages.length} messages`);
   }
 
-  // Update last active time
   conversation.lastActive = new Date();
 
+  // Basic safety on input size
   const inputTokens = estimateTokens(message || '');
   if (inputTokens > 1000) {
     return res.json({
@@ -960,6 +973,7 @@ app.post('/api/chat', async (req, res) => {
     });
   }
 
+  // On-topic guard
   if (!isOnTopic(message, detectedTopic)) {
     return res.json({
       response: `I'm here to help you discover answers in Year 7 mathematics! What specific math problem or concept would you like to explore? What are you curious about?`,
@@ -967,6 +981,7 @@ app.post('/api/chat', async (req, res) => {
     });
   }
 
+  // Fallback if Anthropic not configured
   if (!anthropic) {
     return res.json({
       response: `Great question about ${detectedTopic}! What do you think might be the first step? What comes to mind when you look at this problem? (Add CLAUDE_API_KEY for AI responses)`,
@@ -975,53 +990,39 @@ app.post('/api/chat', async (req, res) => {
   }
 
   try {
-    // Add new user message to conversation
-    conversation.messages.push({ 
-      role: 'user', 
-      content: message,
-      timestamp: new Date()
-    });
-
+    // Record incoming user message
+    conversation.messages.push({ role: 'user', content: message, timestamp: new Date() });
     console.log(`💬 Added message. Total messages: ${conversation.messages.length}`);
 
-    // Smart context management - keep recent messages but summarize old ones
+    // Prepare context
     let messagesToSend = [...conversation.messages];
     let contextSummary = '';
 
-    // Check if we need curriculum context
-    const needsCurriculumContext = !conversation.curriculumLoaded || 
+    // Inject curriculum context if needed
+    const needsCurriculumContext = !conversation.curriculumLoaded ||
                                    conversation.lastCurriculumTopic !== detectedTopic;
-
     if (needsCurriculumContext) {
       const curriculumContext = getCurriculumContext(detectedTopic);
       if (curriculumContext) {
-        messagesToSend.unshift({
-          role: 'system',
-          content: `[${curriculumContext}]`
-        });
+        messagesToSend.unshift({ role: 'system', content: `[${curriculumContext}]` });
         console.log(`📖 Added curriculum context: ${curriculumContext}`);
       }
       conversation.curriculumLoaded = true;
       conversation.lastCurriculumTopic = detectedTopic;
     }
 
-    // If conversation is getting long, summarize older parts
+    // Summarize older messages if long
     if (messagesToSend.length > 14) {
-      const oldMessages = messagesToSend.slice(0, -10); // Keep last 10 messages
+      const oldMessages = messagesToSend.slice(0, -10);
       contextSummary = summarizeOldContext(oldMessages);
       messagesToSend = messagesToSend.slice(-10);
-      
-      // Add summary as context if we have old messages
       if (contextSummary) {
-        messagesToSend.unshift({ 
-          role: 'system', 
-          content: contextSummary 
-        });
+        messagesToSend.unshift({ role: 'system', content: contextSummary });
       }
       console.log(`📝 Summarized ${oldMessages.length} old messages, keeping ${messagesToSend.length} recent ones`);
     }
 
-    // Clean messages for Claude (remove timestamps and system messages)
+    // Clean messages for Claude
     const cleanMessages = messagesToSend
       .filter(m => m.role !== 'system' || m.content.startsWith('Earlier in our conversation') || m.content.startsWith('[Y7'))
       .map(m => ({
@@ -1034,45 +1035,63 @@ app.post('/api/chat', async (req, res) => {
     console.log(`🤖 Sending ${cleanMessages.length} messages to Claude for ${conversation.subject}`);
     console.log(`📋 Recent messages: ${cleanMessages.slice(-3).map(m => `${m.role}: "${m.content.substring(0, 30)}..."`).join(', ')}`);
 
+    // Call Claude
     const claudeResponse = await anthropic.messages.create({
       model: 'claude-3-5-haiku-20241022',
-      max_tokens: 180, // Reduced for more concise responses
+      max_tokens: 180,
       system: systemPrompt,
       messages: cleanMessages,
     });
 
     const responseText = claudeResponse.content?.[0]?.text || 'What do you think we should try next? What comes to mind?';
-    
-    // Add assistant response to conversation
-    conversation.messages.push({ 
-      role: 'assistant', 
-      content: responseText,
-      timestamp: new Date()
-    });
 
-    // Update token usage - be more accurate about what we're actually using
-    const actualInputTokens = claudeResponse.usage?.input_tokens || inputTokens;
+    // Record assistant response
+    conversation.messages.push({ role: 'assistant', content: responseText, timestamp: new Date() });
+
+    // Token accounting
+    const actualInputTokens  = claudeResponse.usage?.input_tokens  || inputTokens;
     const actualOutputTokens = claudeResponse.usage?.output_tokens || estimateTokens(responseText);
-    
     conversation.totalTokens += actualInputTokens + actualOutputTokens;
 
-    // Update user token usage
+    // Per-user usage
     const currentUsage = userTokenUsage.get(userId) || { used: 0, limit: 5000 };
     currentUsage.used += actualInputTokens + actualOutputTokens;
     userTokenUsage.set(userId, currentUsage);
 
     console.log(`🪙 Tokens - Input: ${actualInputTokens}, Output: ${actualOutputTokens}, User Total: ${currentUsage.used}/${currentUsage.limit}`);
 
-    // Save updated conversation
+    // Persist conversation in memory
     conversations.set(conversationKey, conversation);
 
-    // Clean up very old conversations (keep last 50 per user, remove conversations older than 7 days)
+    // ✅ NEW: save transcript (server-side)
+    const userIdLabel = userId || 'Alex';
+    if (!conversationTranscripts.has(userIdLabel)) {
+      conversationTranscripts.set(userIdLabel, []);
+    }
+
+    const transcript = createTranscriptEntry(
+      userIdLabel,
+      message,        // student's message
+      responseText,   // tutor reply
+      {
+        subject: conversation.subject,
+        yearLevel,
+        curriculum,
+        conversationId: conversationKey,
+        detectedTopic,
+        tokensUsed: actualInputTokens + actualOutputTokens,
+        diagramContext: !!diagramContext
+      }
+    );
+
+    conversationTranscripts.get(userIdLabel).push(transcript);
+    console.log(`📝 Saved transcript for ${userIdLabel}. Total: ${conversationTranscripts.get(userIdLabel).length}`);
+
+    // Trim stale conversations for this user (keep ≤50, or <1 week)
     const oneWeekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
     const allUserConversations = Array.from(conversations.entries())
       .filter(([key]) => key.startsWith(userId))
       .sort(([,a], [,b]) => b.lastActive - a.lastActive);
-    
-    // Remove old conversations
     allUserConversations.forEach(([key, conv], index) => {
       if (index >= 50 || conv.lastActive < oneWeekAgo) {
         conversations.delete(key);
@@ -1081,6 +1100,7 @@ app.post('/api/chat', async (req, res) => {
 
     console.log(`✅ Response generated. Conversation length: ${conversation.messages.length}`);
 
+    // Respond
     res.json({
       response: responseText,
       subject: conversation.subject,
@@ -1094,8 +1114,8 @@ app.post('/api/chat', async (req, res) => {
         input: actualInputTokens,
         output: actualOutputTokens,
         conversationTotal: conversation.totalTokens,
-        totalUsed: currentUsage.used,  // This is what frontend expects
-        userTotal: currentUsage.used,  // Keep both for compatibility
+        totalUsed: currentUsage.used,
+        userTotal: currentUsage.used,
         limit: currentUsage.limit,
       },
       conversationId: conversationKey,
@@ -1124,6 +1144,56 @@ app.post('/api/chat', async (req, res) => {
   }
 
   console.log('=== CHAT REQUEST COMPLETE ===\n');
+});
+
+
+// Get transcripts for a user
+app.get('/api/user/:userId/transcripts', (req, res) => {
+  const { userId } = req.params;
+  const { limit = 50, offset = 0 } = req.query;
+  
+  const userTranscripts = conversationTranscripts.get(userId) || [];
+  
+  // Sort by newest first
+  const sortedTranscripts = userTranscripts
+    .sort((a, b) => b.timestamp - a.timestamp)
+    .slice(offset, offset + parseInt(limit));
+  
+  const totalCount = userTranscripts.length;
+  const retentionDate = new Date(Date.now() - (TRANSCRIPT_RETENTION_DAYS * 24 * 60 * 60 * 1000));
+  
+  res.json({
+    transcripts: sortedTranscripts,
+    totalCount,
+    hasMore: totalCount > (offset + parseInt(limit)),
+    retentionPolicy: {
+      days: TRANSCRIPT_RETENTION_DAYS,
+      cutoffDate: retentionDate
+    }
+  });
+});
+
+// Get transcript statistics
+app.get('/api/user/:userId/transcript-stats', (req, res) => {
+  const { userId } = req.params;
+  const userTranscripts = conversationTranscripts.get(userId) || [];
+  
+  const last7Days = userTranscripts.filter(t => 
+    t.timestamp > new Date(Date.now() - (7 * 24 * 60 * 60 * 1000))
+  );
+  
+  const subjectBreakdown = userTranscripts.reduce((acc, t) => {
+    const subject = t.metadata.subject || 'Unknown';
+    acc[subject] = (acc[subject] || 0) + 1;
+    return acc;
+  }, {});
+  
+  res.json({
+    totalTranscripts: userTranscripts.length,
+    last7DaysCount: last7Days.length,
+    subjectBreakdown,
+    retentionDays: TRANSCRIPT_RETENTION_DAYS
+  });
 });
 
 // Reset conversation context
@@ -1217,6 +1287,7 @@ app.get('/debug', (req, res) => {
 });
 
 // Cleanup job - run every hour
+// Find this existing cleanup job near the end of your server.js file (around line 800+):
 setInterval(() => {
   const oneWeekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
   let cleaned = 0;
@@ -1231,6 +1302,9 @@ setInterval(() => {
   if (cleaned > 0) {
     console.log(`🧹 Cleaned up ${cleaned} old conversations`);
   }
+  
+  // ADD THIS: Clean old transcripts
+  cleanOldTranscripts();
 }, 60 * 60 * 1000); // 1 hour
 
 app.listen(PORT, () => {

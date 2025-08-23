@@ -1,18 +1,29 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import './Landing.css';
 
 function Landing() {
   const navigate = useNavigate();
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   const handleLogin = () => {
     console.log('Navigating to login page...');
     navigate('/login');
+    setMobileMenuOpen(false);
   };
 
   const handleSignup = () => {
     console.log('Navigating to signup page...');
     navigate('/signup');
+    setMobileMenuOpen(false);
+  };
+
+  const toggleMobileMenu = () => {
+    setMobileMenuOpen(!mobileMenuOpen);
+  };
+
+  const closeMobileMenu = () => {
+    setMobileMenuOpen(false);
   };
 
   return (
@@ -20,9 +31,20 @@ function Landing() {
       {/* Navigation */}
       <nav className="navbar">
         <div className="logo">AI Tutor</div>
-        <div className="nav-buttons">
-          <a href="#features" className="btn btn-outline">About</a>
-          <a href="#pricing" className="btn btn-outline">Pricing</a>
+        
+        {/* Mobile menu toggle button */}
+        <button 
+          className="mobile-menu-toggle"
+          onClick={toggleMobileMenu}
+          aria-label="Toggle mobile menu"
+        >
+          {mobileMenuOpen ? '✕' : '☰'}
+        </button>
+        
+        {/* Navigation buttons */}
+        <div className={`nav-buttons ${mobileMenuOpen ? 'mobile-menu-open' : ''}`}>
+          <a href="#features" className="btn btn-outline" onClick={closeMobileMenu}>About</a>
+          <a href="#pricing" className="btn btn-outline" onClick={closeMobileMenu}>Pricing</a>
           <button onClick={handleSignup} className="btn btn-outline">Sign Up</button>
           <button onClick={handleLogin} className="btn btn-primary">Login</button>
         </div>
