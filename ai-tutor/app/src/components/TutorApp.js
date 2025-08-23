@@ -1,7 +1,8 @@
-// src/components/TutorApp.js
+// Enhanced TutorApp.js with diagram detection flow
 import React, { useEffect, useState, useRef } from 'react';
 import InlineGeometryCanvas from './InlineGeometryCanvas';
-import { detectGeometryProblem } from './geometryUtils';
+import { detectMathDiagram, DiagramPopup } from './diagramDetector';
+import InlineDiagramConfirm from './InlineDiagramConfirm';
 
 function TutorApp({ userProfile, onLogout, setUserProfile }) {
   // ---- App state ----
@@ -9,6 +10,11 @@ function TutorApp({ userProfile, onLogout, setUserProfile }) {
   const [messages, setMessages] = useState([]);
   const [inputMessage, setInputMessage] = useState('');
   const [isPlaying, setIsPlaying] = useState(null);
+  
+  // ---- New diagram detection state ----
+  const [diagramDetection, setDiagramDetection] = useState(null);
+  const [showDiagramPopup, setShowDiagramPopup] = useState(false);
+  const [pendingMessage, setPendingMessage] = useState(null);
 
   // ---- Refs for auto-scroll ----
   const messagesEndRef = useRef(null);
@@ -43,14 +49,6 @@ function TutorApp({ userProfile, onLogout, setUserProfile }) {
   // ---- Auto-scroll when messages change ----
   useEffect(() => {
     scrollToBottom();
-  }, [messages]);
-
-  // ---- Also scroll after geometry canvas is added ----
-  useEffect(() => {
-    const hasGeometryMessage = messages.some(m => m.sender === 'geometry');
-    if (hasGeometryMessage) {
-      setTimeout(scrollToBottom, 200);
-    }
   }, [messages]);
 
   // ---- Fetch token usage on mount / user change ----
@@ -101,7 +99,224 @@ function TutorApp({ userProfile, onLogout, setUserProfile }) {
     window.speechSynthesis.speak(u);
   };
 
-  // ---- Worksheet generation ----
+  // ---- Enhanced send message with inline confirmation ----
+  const handleSendMessage = async () => {
+    if (!inputMessage.trim()) return;
+
+    // Step 1: Fast local diagram detection
+    const detection = detectMathDiagram(inputMessage);
+    
+    // Add user message first
+    const userMsg = {
+      id: messages.length + 1,
+      text: inputMessage,
+      sender: 'user',
+      timestamp: new Date(),
+    };
+    
+    const history = [...messages, userMsg];
+    setMessages(history);
+    setInputMessage('');
+
+    // Step 2: If diagram detected, show full diagram with confirmation
+    if (detection && detection.confidence > 0.3) {
+      const geometryMsg = {
+        id: history.length + 1,
+        sender: 'geometry_confirm',
+        timestamp: new Date(),
+        shape: detection.shape,
+        dimensions: detection.dimensions,
+        detection: detection,
+        collapsed: false,
+        pendingMessage: userMsg.text
+      };
+      
+      setMessages(prev => [...prev, geometryMsg]);
+      return; // Wait for user confirmation
+    }
+
+    // Step 3: No diagram detected - send to AI directly
+    await sendMessageToAI(userMsg.text, '', history.length + 1);
+  };
+
+  // Handle diagram confirmation
+  const handleConfirmInlineDiagram = (messageId, userMessage) => {
+    // Update the message to confirmed state
+    setMessages(prev => prev.map(msg => 
+      msg.id === messageId 
+        ? { ...msg, sender: 'geometry_confirmed', confirmed: true }
+        : msg
+    ));
+    
+    // Send to AI with diagram context
+    const detection = messages.find(m => m.id === messageId)?.detection;
+    const diagramContext = `[DIAGRAM SHOWN: ${detection.template} - ${detection.shape}]`;
+    sendMessageToAI(userMessage, diagramContext, messageId + 1);
+  };
+
+  const handleDismissInlineDiagram = (messageId, userMessage) => {
+    // Remove the diagram message
+    setMessages(prev => prev.filter(msg => msg.id !== messageId));
+    
+    // Send to AI without diagram context
+    sendMessageToAI(userMessage, '', messageId);
+  };
+
+  const handleCollapseDiagram = (messageId) => {
+    setMessages(prev => prev.map(msg => 
+      msg.id === messageId 
+        ? { ...msg, collapsed: !msg.collapsed }
+        : msg
+    ));
+  };
+
+  // ---- Diagram popup handlers ----
+  const handleConfirmDiagram = async (detection) => {
+    setShowDiagramPopup(false);
+    
+    // Add user message first
+    const userMsg = {
+      id: messages.length + 1,
+      text: pendingMessage.text,
+      sender: 'user',
+      timestamp: pendingMessage.timestamp,
+    };
+    
+    const history = [...messages, userMsg];
+    setMessages(history);
+
+    // Add diagram message
+    const geometryMsg = {
+      id: history.length + 1,
+      sender: 'geometry',
+      timestamp: new Date(),
+      shape: detection.shape,
+      dimensions: detection.dimensions
+    };
+    
+    setMessages(prev => [...prev, geometryMsg]);
+    setInputMessage('');
+
+    // Send to AI with diagram context
+    const diagramContext = `[DIAGRAM SHOWN: ${detection.template} - ${detection.shape} with dimensions: ${JSON.stringify(detection.dimensions)}]`;
+    await sendMessageToAI(pendingMessage.text, diagramContext, history.length + 2);
+    
+    // Clean up
+    setDiagramDetection(null);
+    setPendingMessage(null);
+  };
+
+  const handleUseWithoutDiagram = async () => {
+    setShowDiagramPopup(false);
+    await sendMessageToAI(pendingMessage.text);
+    
+    // Clean up
+    setDiagramDetection(null);
+    setPendingMessage(null);
+  };
+
+  const handleEditDiagram = (detection) => {
+    // TODO: Implement diagram editor
+    // For now, just use the diagram as-is
+    handleConfirmDiagram(detection);
+  };
+
+  const handleDismissDiagram = () => {
+    setShowDiagramPopup(false);
+    setDiagramDetection(null);
+    setPendingMessage(null);
+  };
+
+  // ---- Core AI communication ----
+  const sendMessageToAI = async (messageText, diagramContext = '', nextMessageId = null) => {
+    const newMsg = {
+      id: nextMessageId || messages.length + 1,
+      text: messageText,
+      sender: 'user',
+      timestamp: new Date(),
+    };
+    
+    let history;
+    if (nextMessageId) {
+      // Message already added to history
+      history = messages;
+    } else {
+      history = [...messages, newMsg];
+      setMessages(history);
+      setInputMessage('');
+    }
+
+    setTimeout(scrollToBottom, 50);
+
+    try {
+      // Include diagram context in the message if available
+      const contextualMessage = diagramContext 
+        ? `${diagramContext}\n\nStudent question: ${messageText}`
+        : messageText;
+
+      const resp = await fetch('http://localhost:3001/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message: contextualMessage,
+          subject: 'Mathematics',
+          yearLevel: 7,
+          curriculum: 'NSW',
+          userId: profile.childName || profile.name || 'Alex',
+        }),
+      });
+
+      const data = await resp.json();
+
+      if (resp.ok) {
+        if (data.tokens && setUserProfile) {
+          setUserProfile(prev => ({
+            ...prev,
+            tokensUsed: data.tokens.totalUsed || data.tokens.userTotal || prev.tokensUsed,
+            tokensLimit: data.tokens.limit || prev.tokensLimit,
+          }));
+        }
+
+        setMessages(prev => [
+          ...prev,
+          {
+            id: prev.length + 1,
+            text: data.response,
+            sender: 'bot',
+            timestamp: new Date(),
+            debug: data.debug,
+            conversationLength: data.conversationLength
+          },
+        ]);
+      } else {
+        console.error('Chat API error:', data);
+        setMessages(prev => [
+          ...prev,
+          {
+            id: prev.length + 1,
+            text: data.error || "Sorry, I'm having trouble right now. Please try again!",
+            sender: 'bot',
+            timestamp: new Date(),
+          },
+        ]);
+      }
+    } catch (e) {
+      console.error('Frontend API Error:', e);
+      setMessages(prev => [
+        ...prev,
+        {
+          id: prev.length + 1,
+          text: "I'm having trouble connecting right now. Please check that the backend is running!",
+          sender: 'bot',
+          timestamp: new Date(),
+        },
+      ]);
+    }
+
+    setTimeout(scrollToBottom, 100);
+  };
+
+  // ---- Worksheet generation (unchanged) ----
   const handleGenerateWorksheet = async () => {
     setIsGenerating(true);
     try {
@@ -124,7 +339,6 @@ function TutorApp({ userProfile, onLogout, setUserProfile }) {
       }
 
       const data = await resp.json();
-
       if (typeof data.html === 'string') {
         setGeneratedHtml(data.html);
       } else if (Array.isArray(data.questions)) {
@@ -141,7 +355,6 @@ function TutorApp({ userProfile, onLogout, setUserProfile }) {
     }
   };
 
-  // ---- Server-rendered file downloads (PDF/DOCX) ----
   async function downloadWorksheetFile(fmt) {
     try {
       const resp = await fetch('http://localhost:3001/api/generate-worksheet-file', {
@@ -175,129 +388,6 @@ function TutorApp({ userProfile, onLogout, setUserProfile }) {
     }
   }
 
-  // ---- Chat ----
-  const handleSendMessage = async () => {
-    if (!inputMessage.trim()) return;
-
-    const newMsg = {
-      id: messages.length + 1,
-      text: inputMessage,
-      sender: 'user',
-      timestamp: new Date(),
-    };
-    
-    const geometryDetection = detectGeometryProblem(inputMessage);
-    
-    const history = [...messages, newMsg];
-    setMessages(history);
-    setInputMessage('');
-
-    setTimeout(() => {
-      if (messagesAreaRef.current) {
-        messagesAreaRef.current.scrollTop = messagesAreaRef.current.scrollHeight;
-      }
-    }, 50);
-
-    if (geometryDetection) {
-      console.log('Geometry problem detected:', geometryDetection);
-      
-      const geometryMsg = {
-        id: history.length + 1,
-        sender: 'geometry',
-        timestamp: new Date(),
-        shape: geometryDetection.shape,
-        dimensions: geometryDetection.dimensions
-      };
-      
-      setMessages(prev => {
-        const updated = [...prev, geometryMsg];
-        setTimeout(() => {
-          if (messagesAreaRef.current) {
-            messagesAreaRef.current.scrollTop = messagesAreaRef.current.scrollHeight;
-          }
-        }, 150);
-        return updated;
-      });
-    }
-
-    try {
-      const resp = await fetch('http://localhost:3001/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          message: newMsg.text,
-          subject: 'Mathematics',
-          yearLevel: 7,
-          curriculum: 'NSW',
-          userId: profile.childName || profile.name || 'Alex',
-        }),
-      });
-
-      const data = await resp.json();
-      
-      console.log('Chat response:', {
-        conversationLength: data.conversationLength,
-        detectedTopic: data.detectedTopic,
-        conversationId: data.conversationId,
-        debug: data.debug
-      });
-
-      if (resp.ok) {
-        if (data.tokens && setUserProfile) {
-          setUserProfile(prev => ({
-            ...prev,
-            tokensUsed: data.tokens.totalUsed || data.tokens.userTotal || prev.tokensUsed,
-            tokensLimit: data.tokens.limit || prev.tokensLimit,
-          }));
-        }
-
-        setMessages(prev => {
-          const updated = [
-            ...prev,
-            {
-              id: prev.length + 1,
-              text: data.response,
-              sender: 'bot',
-              timestamp: new Date(),
-              debug: data.debug,
-              conversationLength: data.conversationLength
-            },
-          ];
-          
-          setTimeout(() => {
-            if (messagesAreaRef.current) {
-              messagesAreaRef.current.scrollTop = messagesAreaRef.current.scrollHeight;
-            }
-          }, 100);
-          
-          return updated;
-        });
-      } else {
-        console.error('Chat API error:', data);
-        setMessages(prev => [
-          ...prev,
-          {
-            id: prev.length + 1,
-            text: data.error || "Sorry, I'm having trouble right now. Please try again!",
-            sender: 'bot',
-            timestamp: new Date(),
-          },
-        ]);
-      }
-    } catch (e) {
-      console.error('Frontend API Error:', e);
-      setMessages(prev => [
-        ...prev,
-        {
-          id: prev.length + 1,
-          text: "I'm having trouble connecting right now. Please check that the backend is running!",
-          sender: 'bot',
-          timestamp: new Date(),
-        },
-      ]);
-    }
-  };
-
   const handleResetContext = async () => {
     try {
       await fetch('http://localhost:3001/api/chat/reset', {
@@ -316,8 +406,6 @@ function TutorApp({ userProfile, onLogout, setUserProfile }) {
         sender: 'bot',
         timestamp: new Date(),
       }]);
-      
-      console.log('Conversation context reset successfully');
     } catch (e) {
       console.error('Error resetting context:', e);
     }
@@ -341,7 +429,7 @@ function TutorApp({ userProfile, onLogout, setUserProfile }) {
 
 I'm here to help you think through problems step by step. I won't just give you answers - instead, I'll guide you to discover solutions yourself. That's how real learning happens!
 
-You can type math expressions naturally like "2x + 5 = 15" or "x^2 + 3x - 4" and I'll understand them.
+I can also show you helpful diagrams when I detect geometry or visual problems. Just type your question naturally!
 
 What ${subject.toLowerCase()} problem are you working on today?`,
           sender: 'bot',
@@ -358,6 +446,9 @@ What ${subject.toLowerCase()} problem are you working on today?`,
     setIsPlaying(null);
     setSelectedSubject(null);
     setMessages([]);
+    setShowDiagramPopup(false);
+    setDiagramDetection(null);
+    setPendingMessage(null);
   };
 
   const handleLogout = () => {
@@ -365,6 +456,9 @@ What ${subject.toLowerCase()} problem are you working on today?`,
     setIsPlaying(null);
     setSelectedSubject(null);
     setMessages([]);
+    setShowDiagramPopup(false);
+    setDiagramDetection(null);
+    setPendingMessage(null);
     onLogout?.();
   };
 
@@ -493,6 +587,16 @@ What ${subject.toLowerCase()} problem are you working on today?`,
   if (selectedSubject) {
     return (
       <div className="app chat-mode">
+        {showDiagramPopup && (
+          <DiagramPopup
+            detection={diagramDetection}
+            onConfirm={handleConfirmDiagram}
+            onEdit={handleEditDiagram}
+            onDismiss={handleDismissDiagram}
+            onUseWithoutDiagram={handleUseWithoutDiagram}
+          />
+        )}
+
         <div className="chat-header">
           <button className="back-button" onClick={handleBackToSubjects}>
             ← Back
@@ -563,6 +667,23 @@ What ${subject.toLowerCase()} problem are you working on today?`,
                     />
                   </div>
                 )}
+
+                {(m.sender === 'geometry_confirm' || m.sender === 'geometry_confirmed') && (
+                  <div className="message-content" style={{ marginLeft: '0px', maxWidth: '100%' }}>
+                    <InlineDiagramConfirm
+                      shape={m.shape}
+                      dimensions={m.dimensions}
+                      detection={m.detection}
+                      collapsed={m.collapsed}
+                      confirmed={m.sender === 'geometry_confirmed'}
+                      pendingMessage={m.pendingMessage}
+                      onConfirm={handleConfirmInlineDiagram}
+                      onDismiss={handleDismissInlineDiagram}
+                      onCollapse={handleCollapseDiagram}
+                      messageId={m.id}
+                    />
+                  </div>
+                )}
               </div>
             ))}
             <div ref={messagesEndRef} />
@@ -578,16 +699,30 @@ What ${subject.toLowerCase()} problem are you working on today?`,
                   onChange={e => setInputMessage(e.target.value)}
                   onKeyPress={handleKeyPress}
                   placeholder="Tell me what you're working on or type your solution step by step..."
+                  disabled={showDiagramPopup}
                 />
               </div>
               <button
                 className="send-button"
                 onClick={handleSendMessage}
-                disabled={!inputMessage.trim()}
+                disabled={!inputMessage.trim() || showDiagramPopup}
               >
                 Send
               </button>
             </div>
+            
+            {showDiagramPopup && (
+              <div style={{
+                marginTop: '8px',
+                padding: '8px 12px',
+                backgroundColor: '#e7f3ff',
+                borderRadius: '6px',
+                fontSize: '14px',
+                color: '#0066cc'
+              }}>
+                📊 I detected a diagram-worthy problem! Check the popup above to continue.
+              </div>
+            )}
           </div>
         </div>
       </div>

@@ -252,7 +252,7 @@ body {
 }
 
 .signup-container {
-  max-width: 800px;
+  max-width: 900px;
   margin: 0 auto;
   background: white;
   border-radius: 20px;
@@ -269,13 +269,15 @@ body {
   left: 1rem;
   background: none;
   border: none;
-  color: black !important;
+  color: white;
   cursor: pointer;
   font-size: 0.9rem;
   padding: 0.5rem;
   transition: color 0.3s ease;
   z-index: 10;
+  border-radius: 8px;
 }
+
 
 /* Math Input Styles - Replace the whiteboard CSS in your styles.css */
 
@@ -543,6 +545,7 @@ body {
   margin: 0 auto;
 }
 
+
 .progress-steps {
   display: flex;
   justify-content: space-between;
@@ -597,6 +600,8 @@ body {
   flex-direction: column;
   gap: 0.5rem;
 }
+
+
 
 .form-group.full-width {
   grid-column: 1 / -1;

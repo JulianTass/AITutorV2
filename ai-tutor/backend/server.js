@@ -28,7 +28,7 @@ const {
 const PDFDocument = require('pdfkit');
 
 const app = express();
-const PORT = 3001;
+const PORT = process.env.PORT || 3000;
 
 // In-memory storage (use Redis/DB in production)
 const userTokenUsage = new Map();
