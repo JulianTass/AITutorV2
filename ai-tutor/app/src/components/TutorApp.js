@@ -3,7 +3,7 @@ import React, { useEffect, useState, useRef } from 'react';
 import InlineGeometryCanvas from './InlineGeometryCanvas';
 import { detectMathDiagram, DiagramPopup } from './diagramDetector';
 import InlineDiagramConfirm from './InlineDiagramConfirm';
-const API_BASE_URL = process.env.REACT_APP_API_URL || 'https://aitutorv2-9.onrender.com/';
+const API_BASE_URL = process.env.REACT_APP_API_URL || 'https:localhost://300';
 
 function TutorApp({ userProfile, onLogout, setUserProfile }) {
   // ---- App state ----
